@@ -1,0 +1,446 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearch", "fullTextIndex"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Users & Auth ────────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  username      String    @unique
+  name          String?
+  image         String?
+  bio           String?
+  password      String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts        Account[]
+  sessions        Session[]
+  shelves         Shelf[]
+  reviews         Review[]
+  reviewLikes     ReviewLike[]
+  events          Event[]
+  following       Follow[]     @relation("follower")
+  followers       Follow[]     @relation("following")
+  clubMemberships ClubMember[]
+  discussions     Discussion[]
+  discussionLikes DiscussionLike[]
+  ownedClubs      BookClub[]   @relation("clubOwner")
+  metrics         UserMetrics?
+  wrappedCards    WrappedCard[]
+
+  @@index([username])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ─── Books & Catalog ─────────────────────────────────────────────────────────
+
+model Book {
+  id          String    @id @default(cuid())
+  title       String
+  author      String
+  isbn        String?   @unique
+  coverUrl    String?
+  synopsis    String?   @db.Text
+  publishedAt DateTime?
+  pageCount   Int?
+  publisher   String?
+
+  // Discovery metadata
+  genre     String[]
+  tags      String[] // tropes, themes
+  mood      String[] // dark, uplifting, humorous, suspenseful…
+  pace      Pace     @default(MEDIUM)
+  ageGroup  String?  // adult, ya, middle-grade
+
+  // Aggregated metrics (updated by cron job)
+  avgRating       Float @default(0)
+  ratingCount     Int   @default(0)
+  addToShelfCount Int   @default(0)
+  startCount      Int   @default(0)
+  progressCount   Int   @default(0) // users who logged progress
+  completionCount Int   @default(0)
+  dnfCount        Int   @default(0)
+  reviewCount     Int   @default(0)
+  viewCount       Int   @default(0)
+
+  // Derived rates (0.0–1.0)
+  completionRate    Float @default(0)
+  dnfRate           Float @default(0)
+  startRate         Float @default(0) // started / added
+  reviewRate        Float @default(0) // reviewed / finished
+
+  // Polarization: std-dev of ratings (0 = consensus, high = love/hate)
+  polarizationScore Float @default(0)
+
+  // DNF curve: JSON histogram of progress % at dropoff
+  // e.g. {"0":5,"25":12,"50":8,"75":3}
+  dnfCurve Json @default("{}")
+
+  // TF-IDF style embedding blob for recommendations
+  featureVector Json @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  shelfBooks   ShelfBook[]
+  reviews      Review[]
+  events       Event[]
+  clubReadings ClubReading[]
+  bookMetrics  BookMetrics?
+
+  @@index([title])
+  @@index([author])
+  @@index([pace])
+}
+
+enum Pace {
+  SLOW
+  MEDIUM
+  FAST
+}
+
+// ─── Shelves ─────────────────────────────────────────────────────────────────
+
+model Shelf {
+  id        String    @id @default(cuid())
+  name      String
+  type      ShelfType @default(CUSTOM)
+  userId    String
+  isDefault Boolean   @default(false)
+  createdAt DateTime  @default(now())
+
+  user  User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  books ShelfBook[]
+
+  @@unique([userId, name])
+  @@index([userId, type])
+}
+
+enum ShelfType {
+  WANT_TO_READ
+  CURRENTLY_READING
+  READ
+  DNF
+  CUSTOM
+}
+
+model ShelfBook {
+  id        String  @id @default(cuid())
+  shelfId   String
+  bookId    String
+  userId    String // denormalized for fast queries
+
+  startDate  DateTime?
+  finishDate DateTime?
+  pagesRead  Int?
+  progress   Int       @default(0) // 0–100 percent
+  format     Format    @default(PHYSICAL)
+  ownership  Ownership @default(PURCHASED)
+  costPaid   Float?    // optional, for cost analytics
+  notes      String?   @db.Text
+  addedAt    DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  shelf Shelf @relation(fields: [shelfId], references: [id], onDelete: Cascade)
+  book  Book  @relation(fields: [bookId], references: [id])
+
+  @@unique([shelfId, bookId])
+  @@index([userId])
+  @@index([bookId])
+}
+
+enum Format {
+  PHYSICAL
+  EBOOK
+  AUDIOBOOK
+}
+
+enum Ownership {
+  PURCHASED
+  LIBRARY
+  SUBSCRIPTION
+  BORROWED
+  GIFT
+}
+
+// ─── Reviews ─────────────────────────────────────────────────────────────────
+
+model Review {
+  id          String   @id @default(cuid())
+  userId      String
+  bookId      String
+  rating      Int // 1–5
+  text        String?  @db.Text
+  tags        String[]
+  hasSpoilers Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Sentiment analysis results (computed server-side)
+  sentimentScore Float? // -1.0 to 1.0
+  themes         String[] // extracted keywords
+
+  user  User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  book  Book         @relation(fields: [bookId], references: [id])
+  likes ReviewLike[]
+
+  @@unique([userId, bookId])
+  @@index([bookId, rating])
+}
+
+model ReviewLike {
+  id       String @id @default(cuid())
+  reviewId String
+  userId   String
+
+  review Review @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([reviewId, userId])
+}
+
+// ─── Social ───────────────────────────────────────────────────────────────────
+
+model Follow {
+  id          String   @id @default(cuid())
+  followerId  String
+  followingId String
+  createdAt   DateTime @default(now())
+
+  follower  User @relation("follower", fields: [followerId], references: [id], onDelete: Cascade)
+  following User @relation("following", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId])
+  @@index([followingId])
+}
+
+// ─── Book Clubs ───────────────────────────────────────────────────────────────
+
+model BookClub {
+  id          String  @id @default(cuid())
+  name        String
+  description String? @db.Text
+  ownerId     String
+  isPrivate   Boolean @default(false)
+  coverUrl    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  owner    User          @relation("clubOwner", fields: [ownerId], references: [id])
+  members  ClubMember[]
+  readings ClubReading[]
+
+  @@index([ownerId])
+}
+
+model ClubMember {
+  id       String     @id @default(cuid())
+  clubId   String
+  userId   String
+  role     MemberRole @default(MEMBER)
+  joinedAt DateTime   @default(now())
+
+  club BookClub @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  user User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([clubId, userId])
+  @@index([userId])
+}
+
+enum MemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+model ClubReading {
+  id        String    @id @default(cuid())
+  clubId    String
+  bookId    String
+  startDate DateTime?
+  endDate   DateTime?
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+
+  club        BookClub     @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  book        Book         @relation(fields: [bookId], references: [id])
+  discussions Discussion[]
+
+  @@index([clubId, isActive])
+}
+
+model Discussion {
+  id        String  @id @default(cuid())
+  readingId String
+  userId    String
+  milestone String? // "chapter-5", "page-100", "general"
+  content   String  @db.Text
+  parentId  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent      Discussion?     @relation("replies", fields: [parentId], references: [id])
+  replies     Discussion[]    @relation("replies")
+  likes       DiscussionLike[]
+  clubReading ClubReading     @relation(fields: [readingId], references: [id], onDelete: Cascade)
+
+  @@index([readingId, milestone])
+  @@index([parentId])
+}
+
+model DiscussionLike {
+  id           String @id @default(cuid())
+  discussionId String
+  userId       String
+
+  discussion Discussion @relation(fields: [discussionId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([discussionId, userId])
+}
+
+// ─── Events (analytics pipeline) ─────────────────────────────────────────────
+
+model Event {
+  id         String    @id @default(cuid())
+  userId     String
+  bookId     String?
+  type       EventType
+  properties Json      @default("{}")
+  createdAt  DateTime  @default(now())
+
+  user User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  book Book? @relation(fields: [bookId], references: [id])
+
+  @@index([userId, type, createdAt])
+  @@index([bookId, type, createdAt])
+  @@index([type, createdAt])
+}
+
+enum EventType {
+  VIEW_BOOK
+  ADD_TO_SHELF
+  START_READING
+  UPDATE_PROGRESS
+  FINISH_BOOK
+  DNF_BOOK
+  LIKE_REVIEW
+  COMMENT
+  JOIN_CLUB
+  POST_DISCUSSION
+  FOLLOW_USER
+}
+
+// ─── Aggregated Metrics (updated by nightly cron) ─────────────────────────────
+
+model UserMetrics {
+  id     String @id @default(cuid())
+  userId String @unique
+
+  totalBooksRead  Int   @default(0)
+  totalPagesRead  Int   @default(0)
+  totalDnf        Int   @default(0)
+  avgDaysToFinish Float @default(0)
+  currentStreak   Int   @default(0)
+  longestStreak   Int   @default(0)
+  dnfRate         Float @default(0)
+  booksThisYear   Int   @default(0)
+  pagesThisMonth  Int   @default(0)
+  pagesThisYear   Int   @default(0)
+
+  // Genre breakdown (JSON: {genre: count})
+  genreDistribution   Json @default("{}")
+  completionByGenre   Json @default("{}")
+  dnfByGenre          Json @default("{}")
+
+  // Cost analytics
+  totalSpent     Float @default(0)
+  costPerBook    Float @default(0)
+  libraryRatio   Float @default(0)
+
+  // Reading speed
+  avgPagesPerDay Float @default(0)
+
+  updatedAt DateTime @default(now()) @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model BookMetrics {
+  id     String @id @default(cuid())
+  bookId String @unique
+
+  // Funnel
+  addToShelfRate Float @default(0)
+  startRate      Float @default(0)
+  reach25Rate    Float @default(0)
+  reach50Rate    Float @default(0)
+  reach75Rate    Float @default(0)
+  completionRate Float @default(0)
+  reviewRate     Float @default(0)
+
+  updatedAt DateTime @default(now()) @updatedAt
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+}
+
+// ─── Wrapped / Shareable Cards ────────────────────────────────────────────────
+
+model WrappedCard {
+  id        String   @id @default(cuid())
+  userId    String
+  year      Int
+  imageUrl  String?
+  data      Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, year])
+}

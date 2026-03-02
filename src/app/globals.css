@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --radius: 0.625rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-canvas text-ink text-sm;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-serif text-ink;
+  }
+
+  ::selection {
+    @apply bg-accent-light text-accent;
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent ring-offset-2 ring-offset-canvas;
+  }
+}
+
+@layer components {
+  .skeleton {
+    @apply animate-shimmer bg-gradient-to-r from-border-subtle via-border to-border-subtle bg-[length:400px_100%];
+  }
+
+  .book-cover {
+    @apply rounded-md shadow-card object-cover;
+  }
+
+  .pill {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-2xs font-medium;
+  }
+
+  .page-header {
+    @apply mb-8;
+  }
+
+  .page-header h1 {
+    @apply text-3xl font-bold text-ink mb-1;
+  }
+
+  .page-header p {
+    @apply text-ink-secondary;
+  }
+
+  .stat-card {
+    @apply bg-surface border border-border rounded-lg p-5 shadow-card;
+  }
+
+  .stat-label {
+    @apply text-xs font-medium text-ink-tertiary uppercase tracking-wide;
+  }
+
+  .stat-value {
+    @apply text-2xl font-bold text-ink font-serif mt-1;
+  }
+
+  .stat-sub {
+    @apply text-xs text-ink-secondary mt-0.5;
+  }
+}
+
+@layer utilities {
+  .scrollbar-hide {
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+}
